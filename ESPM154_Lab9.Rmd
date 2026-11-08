@@ -1,0 +1,588 @@
+---
+title: "ESPM 154 Lab 9: Landscape simulations with Geonomics"
+output:
+  html_notebook:
+    toc: true
+---
+
+# Evolutionary simulations across painted landscapes
+
+Today, you will build on your experience with Geonomics to run simulations on landscapes you design. We will use a `Shiny` editor (EvoDoodleR) to draw landscapes in some of the code chunks below. Clicking **Save all and return to notebook** closes the editor and returns a named list of three R rasters. Separate R chunks pass those rasters to Geonomics and then plot the simulation results in R.
+
+Under the hood, EvoDoodleR uses Geonomics to run these simulations, so a lot of what you will see in this lab will be similar to our Geonomics labs. The key difference is that we will be able to control the configuration of the landscape layers that control population size, connectivity, and local adaptation. This gives us the power to explore how evolutionary processes act across different landscapes, which we will use to answer real conservation questions.
+
+The three layers we will create with EvoDoodleR control carrying capacity, connectivity, and the environment driving local adaptation. We will use them to test a series of conservation hypotheses.
+
+## Working with this notebook
+
+Open this file in RStudio and run chunks individually, in order. Use the green arrow or **Ctrl+Shift+Enter** in the current chunk. Do not click `Run All` or try to run multiple chunks before the previous one finishes or when you still need to draw landscapes.
+
+**After saving a landscape, the Shiny page may go gray because its drawing session has ended normally. Return to this notebook if the pop-up window does not close automatically.** Do not close the editor with the window's X; use Save and return or Cancel.
+
+The editor saves each set of three rasters  under `landscapes/`. Simulation results are saved under `runs/`. 
+
+
+# Setup
+
+Run the following chunk before the exercise. If you are working on your own computer, you may need to install some required packages first. On DataHub we use the existing Python environment with Geonomics.
+
+```{r lab9-2, results="hold"}
+knitr::opts_chunk$set(echo=TRUE, cache=FALSE, fig.width=10, fig.height=7)
+# If needed, install these once in the R console:
+# install.packages(c("shiny", "jsonlite"))
+
+source("support/notebook_helpers.R")
+params <- gnx_parameters()
+
+# On DataHub:
+Sys.setenv(EVODOODLE_PYTHON="/srv/conda/envs/notebook/bin/python")
+```
+
+## Drawing workflow
+
+A drawing call such as `landscapes <- draw_landscapes(d=10)` opens all the three landscapes that form the basis for the simulations together. Paint the layers and click **Save all and return to notebook**. The result is a named list containing `carrying_capacity`, `connectivity`, and `environment`, each a 10 × 10 raster (by default).
+
+Fresh layers start at uniform values of one. Choose other values to create barriers, remove available habitat, etc. Editing an existing raster creates a separate landscape and does not modify the previous scenario.
+
+The simulation begins only when you run a later `run_geonomics()` chunk, after Shiny has stopped.
+
+# Part 1: Drawing landscapes
+
+We can control three different landscape layers for our simulations:
+
+1. **Carrying capacity** - this layer controls the number of individuals that each landscape cell can support. This landscape is particularly useful for creating barriers by drawing areas that have a carrying capacity of zero.
+
+2. **Connectivity** - this layer controls how easily individuals can move through each cell. Reducing the value will limit movement across that cell.
+
+3. **Environment** - this layer defines the environmental gradient that our species will adapt to. The species has a single trait that is selected upon based on this environmental layer.
+
+By default all three of these landscape layers have a uniform value of one; you can leave these landscape layers as the default if you want to experiment with modifying just one or two landscape layers at a time. **You do not need to customize every landscape in your simulations and you often will not want to.**
+
+### 1. Draw your landscape
+
+Run the drawing chunk below to edit all three layers in one window. Click Save all and return when finished. You may leave a layer uniform.
+
+Note that you can potentially drive your species to extinction if carrying capacity is too low across the landscape. If that occurs, try running the simulation again with a different carrying capacity landscape.
+
+```{r lab9-7, results="hold"}
+landscapes <- draw_landscapes(d=10,
+  file="landscapes/landscapes.rds")
+
+carrying_capacity <- landscapes$carrying_capacity
+connectivity <- landscapes$connectivity
+environment <- landscapes$environment
+```
+
+Plot the landscapes to check their configurations. 
+
+```{r lab9-10, results="hold"}
+# You can plot all your landscape layers using plot_landscapes()
+plot_landscapes(carrying_capacity, connectivity, environment)
+```
+
+To revise a saved layer, rerun its drawing chunk. To start from the current landscape, pass `initial=landscapes`. For example:
+
+```r
+# landscapes <- draw_landscapes(initial=landscapes,
+#   file="landscapes/landscapes.rds")
+# carrying_capacity <- landscapes$carrying_capacity
+# connectivity <- landscapes$connectivity
+# environment <- landscapes$environment
+```
+
+### 2. Simulate evolution across your landscape
+
+Now that you have custom-designed your landscape layers, you can simulate evolution across them. The next chunk initializes and burns in a single population, then runs two consecutive 100-step stages. It saves snapshots at steps 0, 100, and 200 time steps, which we will inspect below. Both stages belong to the **same model**, rather than independent simulations.
+
+This chunk can take several minutes. The R console reports the log location. It is normal for R to be busy; wait for the simulation to complete before proceeding.
+
+Before running a simulation, let's look at the paramters for the model.  We can edit the arguments below to change those parameters.
+
+For example, increase `phi` to strengthen selection or decrease `K_factor` to lower carrying capacity.
+`n_loci` is the number of loci controlling the selected trait (phenotype), not the total genomic loci.
+Starting population size (starting_N) is before burn-in; step 0 can contain a different number of individuals.
+
+```{r simulation-parameters}
+params <- gnx_parameters(
+  starting_N = 500,         # Individuals before burn-in
+  total_loci = 1000,        # Total genomic loci
+  phi = 0.05,               # Selection strength: 0 to 1
+  n_loci = 1,               # Loci underlying the trait: 1 to 100
+  K_factor = 5,             # Carrying-capacity scaling: greater than zero
+  movement_distance = 0.5,  # Movement-distance distribution parameter
+  mating_radius = 4,        # Mating radius in cell widths
+)
+
+# Read these two fixed settings from the actual model template.
+template <- jsonlite::fromJSON("support/model_params.json", simplifyVector=FALSE)
+species_settings <- template$comm$species$spp_0
+parameter_table <- data.frame(
+  Parameter = c("Starting individuals (before burn-in)", "Total genomic loci",
+                "Selection strength", "Loci controlling the selected trait",
+                "Carrying-capacity multiplier", "Movement distance",
+                "Mating radius", "Random seed"),
+  Value = c(species_settings$init$N, species_settings$gen_arch$L,
+            params$phi, params$n_loci, params$K_factor,
+            params$movement_distance, params$mating_radius, params$seed)
+)
+knitr::kable(parameter_table, row.names=FALSE)
+```
+
+Now we can run the simulation using the landscapes you designed and the parameters above.
+
+```{r lab9-14, results="hold"}
+mod <- run_geonomics(carrying_capacity, connectivity, environment,
+                     params=params, steps=c(100,100), name="intro")
+```
+
+Wait for this chunk to finish before running the plots.
+
+The R helper `plot_popgen()` plots a saved simulation snapshot. This function produces four plots.
+
+1. **PCA plot in PCA space** - this plot shows each individual plotted in genetic PC space. The closer individuals are together in PC space, the more similar they are. They also are colored based on the PCs to help in interpretation of the PCA map (Plot 2); more similar the colors = more genetically similar individuals.
+
+2. **PCA plot in landscape space** - this plot shows each individual plotted across the landscape, colored based on the genetic PCs; more similar the colors = more genetically similar individuals. By default, the "background" of this plot is the carrying capacity layer; however, this background is just for visualization purposes and could theoretically be set to any of the three layers (i.e., carrying capacity, connectivity, or environment).
+
+3. **Heterozygosity plot** - this plot shows each individual plotted across the landscape, colored based on their heterozygosity. This allows us to see how genetic diversity varies across space. The background of this plot is the connectivity layer; however, this background is just for visualization purposes and could theoretically be set to any of the three layers (i.e., carrying capacity, connectivity, or environment).
+
+4. **Phenotype-environment plot** - this plot shows each individual plotted across the landscape, colored based on their phenotype. The background is the environmental layer driving selection on this phenotype. Matching between the individual's color and the background color indicates that local adaptation is occurring.
+
+Plot the simulation after the burn-in stage (at time step 0).
+
+```{r lab9-16, results="hold"}
+plot_popgen(mod, stage=0)
+```
+
+Plot the simulation after the first stage (at time step 100).
+
+```{r lab9-17, results="hold"}
+# The first 100 steps have already run in the simulation chunk.
+# Plot the saved stage at step 100.
+plot_popgen(mod, stage=1)
+```
+
+Plot the simulation after the second stage (at time step 200).
+
+```{r lab9-19, results="hold"}
+# The second 100 steps continued the same population.
+plot_popgen(mod, stage=2)
+```
+
+```{r lab9-20, results="hold"}
+# Compare step 200 with steps 0 and 100.
+```
+
+# Part 2: Answering real-world questions with Evodoodle
+
+Now that you have played around with Evodoodle, let's apply it to answering some evolutionary and conservation questions. You will have to decide how you want to design your landscape layers to answer the question at hand. We will walk through the first exercise together. Remember our hypothesis testing framework from last time:
+
+If we [**change our landscape**], then we expect [**outcome with evidence**] because [**justification**].
+
+For each simulation, think about what your hypothesis is and how you will evaluate it based on your results.
+
+**As you run your simulations, consider some of the advantages and limitations of these types of simplified representations of real-world processes.** How are your landscapes similar to and different from real landscapes? What other variables would you need to consider in your decision making process? How might your findings be misinterpreted and what might the consequences be? What kind of empirical data would you want to collect to evaluate the findings of your simulations?
+
+### Simulation tips
+
+1. You do not have to customize every landscape layer (e.g. population size, connectivity, and environment); often you may want to just change one layer and leave the rest uniform.
+
+2. To evaluate your results you should consider both neutral and adaptive processes (though sometimes only one will apply). Remember that you can use your PCA plots to assess genetic differentiation, your phenotype-environment plots to assess local adaptation, and your heterozygosity plots to assess genetic diversity.
+
+3. If you are interested in changes in heterozygosity, you may need to run your simulations for a longer period of time (300-500 generations or more).
+
+PCA is fitted separately for each snapshot. Axis signs and RGB colors may change between snapshots, so compare spatial patterns and separation within a single plot rather than tracking an identical color through time.
+
+### Coding tips
+
+Most of the code for these exercises is provided for you or requires minimal editing or copy-pasting; however, you may find it helpful to edit the code below and make use of the following functions:
+
+`draw_landscapes(d=10)` draws a fresh set of three layers. `draw_landscapes(initial=landscapes)` edits a copy of an existing set. `plot_landscapes()` plots your inputs; `run_geonomics()` runs a simulation; `plot_popgen()` plots a saved result.
+
+A layer is an ordinary R matrix. To use the same configuration for two roles:
+
+```r
+# connectivity <- carrying_capacity
+```
+
+R's normal copy-on-modify behavior keeps the matrices independent when you later edit one. Use a unique `name` for each simulation so its saved files are identifiable.
+
+Use the inputs in this order, or name them explicitly:
+
+```r
+# result <- run_geonomics(carrying_capacity, connectivity, environment,
+#                        params=params, steps=200, name="my_scenario")
+```
+
+Change `steps=200` to change the run length. Use `steps=c(100,100)` for successive stages of one model. A new `run_geonomics()` call starts a fresh model; it does not resume a previous R result object.
+
+
+## Exercise 1: Evaluating the effectiveness of a wildlife corridors
+
+Wildlife corridors are a popular method for restoring connectivity between areas fragmented by human development, such as roads. In our previous lab, we used simulations to show how a barrier can result in population divergence. Let's test to see the effect of building a barrier but including a corridor across it that individuals can pass through.
+
+To test this question we will run three simulations: 
+1. A simulation with no barrier
+2. A simulation with a barrier and no corridor
+3. A simulation with a barrier and with a corridor
+
+For these simulations, we will keep our selective environment uniform (i.e., no spatially divergent selection).
+
+First, make layers with no barrier (everything is homogenous).
+
+```{r lab9-26, results="hold"}
+uniform_landscape <- matrix(1, nrow=10, ncol=10)
+environment <- uniform_landscape
+connectivity <- uniform_landscape
+carrying_capacity <- uniform_landscape
+```
+
+Now, let's run our null simulation with no barrier or corridor.
+
+```{r lab9-28, results="hold"}
+mod1 <- run_geonomics(carrying_capacity, connectivity, environment,
+  params=params, steps=200, name="corridor_null")
+```
+
+Plot the results of the null simulation. 
+
+```{r}
+plot_popgen(mod1)
+```
+
+Now, create a new carrying capacity landscape with a barrier by drawing a line of zero-value cells dividing the landscape. Where exactly you draw this barrier is up to you. You should also edit the connectivity layer to match, but don't change the selection landscape.
+
+```{r lab9-30, results="hold"}
+barrier_layers <- draw_landscapes(
+  initial=list(carrying_capacity=carrying_capacity,
+               connectivity=connectivity, environment=environment),
+  title="Draw barrier layers", file="landscapes/barrier_layers.rds")
+carrying_capacity_barrier <- barrier_layers$carrying_capacity
+connectivity <- barrier_layers$connectivity
+environment <- barrier_layers$environment
+```
+Run the barrier simulation with this new set of layers.
+
+```{r lab9-31, results="hold"}
+mod2 <- run_geonomics(carrying_capacity_barrier, connectivity, environment,
+  params=params, steps=200, name="corridor_barrier")
+```
+
+Plot the results. 
+
+```{r}
+plot_popgen(mod2)
+```
+
+Next, let's edit our barrier landscape to include a corridor. To create a corridor, replace a part of your zeros barrier with ones. You may want to try multiple corridor widths and see how that affects your results.
+
+```{r lab9-33, results="hold"}
+corridor_layers <- draw_landscapes(
+  initial=list(carrying_capacity=carrying_capacity_barrier,
+               connectivity=connectivity, environment=environment),
+  title="Draw corridor layers", file="landscapes/corridor_layers.rds")
+carrying_capacity_corridor <- corridor_layers$carrying_capacity
+connectivity <- corridor_layers$connectivity
+environment <- corridor_layers$environment
+```
+
+Run the corridor simulation. 
+
+```{r lab9-34, results="hold"}
+mod3 <- run_geonomics(carrying_capacity_corridor, connectivity, environment,
+  params=params, steps=200, name="corridor_restored")
+```
+
+Plot the results. 
+
+```{r}
+plot_popgen(mod3)
+```
+
+Let's recreate our plots below for ease of comparison between our three scenarios:
+
+```{r lab9-36, results="hold"}
+# No barrier
+plot_popgen(mod1)
+# Barrier, no corridor
+plot_popgen(mod2)
+# Barrier and corridor
+plot_popgen(mod3)
+```
+
+**Use your results above to answer Question 1.**
+
+## Exercise 2: Optimizing land preservation for conservation
+
+Imagine a scenario in which you are working for a conservation organization that has funds to buy a fixed area of land and is trying to decide whether to build (Option 1) a large, connected, single preserve or (Option 2) several, smaller, disconnected preserves. Design a simulation to help them explore their decision.
+
+How you design the landscape layers for the simulation is up to you, but here are some suggestions:
+
+1. Consider what you are interested in: minimizing drift? Conserving phenotypic diversity? Maximizing genetic diversity? If you want to keep things simple, you can focus on one of these for your simulations. Note that if you are interested in genetic diversity, you may need to increase the model walk times to 300-500 steps.
+
+2. Remember that they have a fixed amount of land they can buy; make sure that the total area preserved when simulating either option is the same (i.e., your small preserves should have the same summed area as your large preserve). For example, you could aim to preserve 36 cells total in both simulations and just change the arrangement of those 36 cells.
+
+3. If you make your preserved areas too small, you may end up with extinction; this will appear as an error when running your simulations. You can describe this extinction event as a result, but if you are getting extinction in all of your scenarios, you may need to increase the number of cells preserved.
+
+4. To make things simpler, you may want to keep your preserves rectangular (i.e., not irregularly shaped).
+
+The code we have provided for you below assumes you are running two simulations; however, you can run as many simulations as you would like by copy and pasting the code chunks.
+
+Draw the first set of landscapes. 
+
+```{r lab9-39, results="hold"}
+landscapes1 <- draw_landscapes(d=10,
+  file="landscapes/landscapes1.rds")
+
+carrying_capacity1 <- landscapes1$carrying_capacity
+connectivity1 <- landscapes1$connectivity
+environment1 <- landscapes1$environment
+```
+
+Check the landscape plots. 
+
+```{r lab9-42, results="hold"}
+# Plot your landscape layers
+plot_landscapes(carrying_capacity1, connectivity1, environment1)
+```
+
+Run the simulation.
+
+```{r lab9-43, results="hold"}
+mod1 <- run_geonomics(carrying_capacity1, connectivity1, environment1,
+  params=params, steps=200, name="preserve_1")
+```
+
+Plot the results. 
+
+```{r}
+plot_popgen(mod1)
+```
+
+Now, draw the landscapes for your second simulation (if you want to run a third after this, copy and paste the code below).
+
+```{r lab9-45, results="hold"}
+landscapes2 <- draw_landscapes(initial=landscapes1,
+  file="landscapes/landscapes2.rds")
+
+carrying_capacity2 <- landscapes2$carrying_capacity
+connectivity2 <- landscapes2$connectivity
+environment2 <- landscapes2$environment
+```
+
+Check the landscape plots.
+
+```{r lab9-48, results="hold"}
+# Plot your landscape layers
+plot_landscapes(carrying_capacity2, connectivity2, environment2)
+```
+
+Run the second simulation.
+
+```{r lab9-49, results="hold"}
+mod2 <- run_geonomics(carrying_capacity2, connectivity2, environment2,
+  params=params, steps=200, name="preserve_2")
+```
+
+Plot the results.
+
+```{r}
+plot_popgen(mod2)
+```
+
+```{r lab9-50, results="hold"}
+# Let's plot our results together to make it easier to compare
+plot_popgen(mod1)
+plot_popgen(mod2)
+```
+
+**Use your results to answer Question 2.**
+
+# Exercise 3: Optimizing land use for conservation
+
+Now, you are consulting for a logging company that is trying to figure out how to log a parcel of land while minimizing damage to a local caribou population using the landscape. They need help deciding whether it is better for them to selectively remove trees evenly across the landscape or in one clear-cut area. Obviously, the amount of habitat cleared matters a lot when answering a question like this, so to keep things simple let's imagine you need to log 20 cells of habitat from your 10 cell x 10 cell landscape (i.e., 20% of the habitat). If you have time, you can also test removing a larger number of cells of habitat (i.e., 60% of the habitat).
+
+To make this a little more interesting, you have to decide for yourself what the affect of logging is on a cell of habitat. For example, it could be that a cell that is logged has a carrying capacity of zero, half the carrying capacity, half the connectivity, etc., or some combination of those. You can also decide whether local adaptation is occurring or not. Hint: If you want to use the same landscape layers for carrying capacity and connectivity look at the code example above for how to copy and edit an existing layer. 
+
+The code we have provided for you below assumes you are running two simulations; however, you can run as many simulations as you would like by copy and pasting the code chunks below and you may want to edit them based on the code examples provided above.
+
+Draw the first set of landscapes.
+
+```{r lab9-53, results="hold"}
+landscapes3 <- draw_landscapes(d=10,
+  file="landscapes/landscapes3.rds")
+
+carrying_capacity3 <- landscapes3$carrying_capacity
+connectivity3 <- landscapes3$connectivity
+environment3 <- landscapes3$environment
+```
+
+Check the landscape plots. 
+
+```{r lab9-56, results="hold"}
+# Plot your landscape layers
+plot_landscapes(carrying_capacity3, connectivity3, environment3)
+```
+
+Run the first simulation.
+
+```{r lab9-57, results="hold"}
+mod3 <- run_geonomics(carrying_capacity3, connectivity3, environment3,
+  params=params, steps=200, name="logging_1")
+```
+
+Plot the results. 
+
+```{r}
+plot_popgen(mod3)
+```
+
+Now, draw the landscape for your second simulation.
+
+```{r lab9-59, results="hold"}
+landscapes4 <- draw_landscapes(initial=landscapes3,
+  file="landscapes/landscapes4.rds")
+
+carrying_capacity4 <- landscapes4$carrying_capacity
+connectivity4 <- landscapes4$connectivity
+environment4 <- landscapes4$environment
+```
+
+Check the landscape plots. 
+
+```{r lab9-62, results="hold"}
+# Plot your landscape layers
+plot_landscapes(carrying_capacity4, connectivity4, environment4)
+```
+
+Run the second simulation. 
+
+```{r lab9-63, results="hold"}
+mod4 <- run_geonomics(carrying_capacity4, connectivity4, environment4,
+  params=params, steps=200, name="logging_2")
+```
+
+Plot the results. 
+
+```{r}
+plot_popgen(mod4)
+```
+
+Plot the results side-by-side.
+
+```{r lab9-64, results="hold"}
+plot_popgen(mod3)
+plot_popgen(mod4)
+```
+
+**Use the results above to answer Question 3.**
+
+# Exercise 4: Changing species parameters
+
+So far, we have only used the default simulation parameters; this means that for all of our simulations we have used the same underlying species parameters (e.g., selection strength, mating radius, etc.). Pick one of the exercise scenarios above and test the effect of changing one of the following parameters. Make sure to write down your hypothesis before you run your simulation:
+
+<b>Parameters to tweak</b>:
+- **phi**: This controls the strength of selection on the trait. It can be set to 0 <= value <= 1.
+
+- **n_loci**: This controls the number of genetic loci underlying the trait's phenotype. For this simulation, it can be set to 1 <= value <= 100. Remember, most traits are not controlled by a single gene, so this can be an important factor in the real world.
+
+- **K_factor**: This controls the population density, by setting the number of individuals that can inhabit each cell. It can be set to any value > 0, technically, but larger values increase population size and computational demand. The default is 5; increase it cautiously on DataHub. Higher and lower population density can have a number of impacts, like ability to find mates, availability of resources, etc. Founder effects are highly important here as well.
+
+- **movement_distance**: This controls the average distance that an individual moves each time step (in units of cell-widths), and thus how mobile the species is. For this simulation, it can be set to any value > 0 (but very large values might cause problems!).
+
+- **mating_radius**: This controls the radius (expressed in cell-widths) within which an individual can choose a mate. For this simulation, it can be set to any value > 0.
+
+```{r lab9-67, results="hold"}
+# Change one parameter for your new hypothesis.
+params <- gnx_parameters(
+  starting_N = 500,         # Individuals before burn-in
+  total_loci = 1000,        # Total genomic loci
+  phi = 0.05,               # Selection strength: 0 to 1
+  n_loci = 1,               # Loci underlying the trait: 1 to 100
+  K_factor = 5,             # Carrying-capacity scaling: greater than zero
+  movement_distance = 0.5,  # Movement-distance distribution parameter
+  mating_radius = 4,        # Mating radius in cell widths
+)
+
+```
+
+Draw the landscapes. 
+
+```{r lab9-68, results="hold"}
+landscapes5 <- draw_landscapes(d=10,
+  file="landscapes/landscapes5.rds")
+
+carrying_capacity5 <- landscapes5$carrying_capacity
+connectivity5 <- landscapes5$connectivity
+environment5 <- landscapes5$environment
+```
+
+Check the landscape plots. 
+
+```{r lab9-71, results="hold"}
+# Plot your landscape layers
+plot_landscapes(carrying_capacity5, connectivity5, environment5)
+```
+
+Run the simulation.
+
+```{r lab9-72, results="hold"}
+mod5 <- run_geonomics(carrying_capacity5, connectivity5, environment5,
+  params=params, steps=200, name="species_1")
+```
+
+Plot the results.
+
+```{r}
+plot_popgen(mod5)
+```
+
+Now, set up the landscapes for your second simulation.
+
+```{r lab9-74, results="hold"}
+landscapes6 <- draw_landscapes(initial=landscapes5,
+  file="landscapes/landscapes6.rds")
+
+carrying_capacity6 <- landscapes6$carrying_capacity
+connectivity6 <- landscapes6$connectivity
+environment6 <- landscapes6$environment
+```
+
+Check the landscape plots. 
+
+```{r lab9-77, results="hold"}
+# Plot your landscape layers
+plot_landscapes(carrying_capacity6, connectivity6, environment6)
+```
+
+Run the second simulation.
+
+```{r lab9-78, results="hold"}
+mod6 <- run_geonomics(carrying_capacity6, connectivity6, environment6,
+  params=params, steps=200, name="species_2")
+```
+
+Plot the results. 
+
+```{r}
+plot_popgen(mod6)
+```
+
+Plot the results side-by-side.
+
+```{r lab9-79, results="hold"}
+# Plot your results side-by-side
+plot_popgen(mod5)
+plot_popgen(mod6)
+```
+
+**Use the results above to answer Question 4.**
+
+## Save your work
+
+Save this Rmd and keep its `landscapes/`, `runs/`, and `support/` folders together if you want to continue workign on it later. 
+
+To restore a landscape manually:
+```r
+# landscapes <- readRDS("landscapes/landscapes.rds")
+# carrying_capacity <- landscapes$carrying_capacity
+```
