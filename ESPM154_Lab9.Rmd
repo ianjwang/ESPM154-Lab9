@@ -397,7 +397,7 @@ plot_popgen(mod2)
 
 **Use your results to answer Question 2.**
 
-# Exercise 3: Optimizing land use for conservation
+# Exercise 3: Impacts of habitat loss
 
 Now, you are consulting for a logging company that is trying to figure out how to log a parcel of land while minimizing damage to a local caribou population using the landscape. They need help deciding whether it is better for them to selectively remove trees evenly across the landscape or in one clear-cut area. Obviously, the amount of habitat cleared matters a lot when answering a question like this, so to keep things simple let's imagine you need to log 20 cells of habitat from your 10 cell x 10 cell landscape (i.e., 20% of the habitat). If you have time, you can also test removing a larger number of cells of habitat (i.e., 60% of the habitat).
 
